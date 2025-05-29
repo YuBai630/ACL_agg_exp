@@ -475,15 +475,15 @@ class ACOptimizer:
         ax.scatter(all_prices_list, all_powers_list, color='gray', s=10, alpha=0.2, label='原始数据点 (所有小时)')
         
         # 绘制分组后的平均值点
-        ax.scatter(grouped_prices, grouped_powers, color='blue', s=40, alpha=0.8, label='分组平均值 (按电价)')
+        ax.scatter(grouped_prices, grouped_powers, color='blue', s=40, alpha=0.8, label='分组平均值 ')
         
         # 使用step函数绘制阶梯状折线图
         ax.step(sorted_prices, sorted_powers, where='post', linewidth=2.5, 
                 color='darkblue', alpha=0.9, label='阶梯状需求曲线 (平均)')
         
-        ax.set_xlabel('电价 (元/kWh)', fontsize=12)
+        ax.set_xlabel('控制信号 ', fontsize=12)
         ax.set_ylabel('功率 (kW)', fontsize=12)
-        ax.set_title('所有时刻合并的电价-功率关系（阶梯状折线图）', fontsize=14)
+        ax.set_title('所有时刻合并的控制信号-功率关系（阶梯状折线图）', fontsize=14)
         ax.grid(True, alpha=0.3)
         ax.legend()
         
@@ -578,4 +578,4 @@ def main():
     # optimizer.plot_price_power_curves_all_hours(num_samples=30, hours_to_plot=[0, 6, 12, 18]) # 减少样本数并选择部分小时
 
 if __name__ == "__main__":
-    main()
+    main() 

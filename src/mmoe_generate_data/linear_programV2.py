@@ -25,7 +25,6 @@ rcParams['axes.unicode_minus'] = False
 
 class ACOptimizer:
     def __init__(self, T=24, delta_t=1.0, P_rated=3.0, T_min=20.0, T_max=26.0,
-                 T_max_price_sensitivity_factor=0.05,  # 新增：电价对T_max的敏感度因子
                  eta=0.8, R=2.0, C=5.0, T_initial=22.0):
         """
         初始化空调优化器
@@ -34,9 +33,7 @@ class ACOptimizer:
         T: 时间步数 (小时)
         delta_t: 时间步长 (小时)
         P_rated: 额定功率 (kW)
-        T_min: 最低温度约束 (°C)
-        T_max: 基准最高温度约束 (°C)
-        T_max_price_sensitivity_factor: 电价对最高温度影响的敏感度因子
+        T_min, T_max: 温度约束 (°C)
         eta: 空调效率
         R: 热阻 (°C/kW)
         C: 热容 (J/°C)，将自动转换为kWh/°C
@@ -46,8 +43,7 @@ class ACOptimizer:
         self.delta_t = delta_t
         self.P_rated = P_rated
         self.T_min = T_min
-        self.T_max_base = T_max  # 修改：基准最高温度
-        self.T_max_price_sensitivity_factor = T_max_price_sensitivity_factor # 新增
+        self.T_max = T_max
         self.eta = eta
         self.R = R
         
@@ -97,23 +93,8 @@ class ACOptimizer:
              for t in range(1, self.T + 1)]
         
         # T_i_t: 每个时间步的室内温度
-        # 修改：为每个时间步计算动态T_max并定义T_i
-        T_i = []
-        self.dynamic_T_max_values = [] # 用于存储每个时间步的T_max，以便绘图
-        for t_idx in range(self.T): # t_idx from 0 to T-1, 对应T_i_{t_idx+2}
-            price_for_step = self.prices[t_idx] # 电价对应P[t_idx]发生的时段
-            
-            # 计算当前时间步的动态T_max
-            # T_max_t = T_max_base * exp(-sensitivity_factor * price)
-            # price > 0 (高电价) => exp为负指数 => T_max降低
-            # price < 0 (低电价/负电价) => exp为正指数 => T_max升高
-            current_T_max = self.T_max_base * np.exp(-self.T_max_price_sensitivity_factor * price_for_step)
-            
-            # 确保 T_max 不低于 T_min (例如，至少比T_min高0.1°C)
-            current_T_max = max(current_T_max, self.T_min + 0.1)
-            
-            self.dynamic_T_max_values.append(current_T_max)
-            T_i.append(pulp.LpVariable(f"T_i_{t_idx+2}", lowBound=self.T_min, upBound=current_T_max))
+        T_i = [pulp.LpVariable(f"T_i_{t}", lowBound=self.T_min, upBound=self.T_max) 
+               for t in range(2, self.T + 2)]
         
         # 目标函数：最小化总电费成本（包含电价）
         prob += pulp.lpSum([self.prices[t-1] * P[t-1] * self.delta_t for t in range(1, self.T + 1)])
@@ -182,14 +163,7 @@ class ACOptimizer:
         # 绘制室内温度
         ax2.plot(time_steps, self.optimal_temperatures, 'ro-', linewidth=2, markersize=4, label='室内温度')
         ax2.axhline(y=self.T_min, color='g', linestyle='--', alpha=0.7, label=f'最低温度 {self.T_min}°C')
-        # 修改：绘制动态最高温度线
-        if hasattr(self, 'dynamic_T_max_values') and len(self.dynamic_T_max_values) == self.T:
-            # dynamic_T_max_values 对应 T_optimal_temperatures[1:] 的上限
-            # dynamic_T_max_values 的长度为 T，对应 time_steps[1:] (即 1 到 T)
-            ax2.plot(time_steps[1:], self.dynamic_T_max_values, color='magenta', linestyle='--', linewidth=1.5, alpha=0.7, label='动态最高温度')
-        else:
-            # Fallback to base T_max if dynamic values are not available
-            ax2.axhline(y=self.T_max_base, color='r', linestyle='--', alpha=0.7, label=f'基准最高温度 {self.T_max_base}°C')
+        ax2.axhline(y=self.T_max, color='r', linestyle='--', alpha=0.7, label=f'最高温度 {self.T_max}°C')
         ax2.set_ylabel('温度 (°C)')
         ax2.set_title('室内温度变化')
         ax2.legend()
@@ -225,12 +199,11 @@ class ACOptimizer:
             print(f"总成本: {self.total_cost:.2f} 元")
             print(f"平均功率: {self.total_energy/self.T:.2f} kW")
             print(f"平均电价: {sum(self.prices)/len(self.prices):.3f} 元/kWh")
-            print("\n时间步 | 功率(kW) | 室内温度(°C) | 室外温度(°C) | 电价(元/kWh) | 时段成本(元) | 动态Tmax(°C)")
-            print("-" * 100) # 调整分隔线长度
+            print("\n时间步 | 功率(kW) | 室内温度(°C) | 室外温度(°C) | 电价(元/kWh) | 时段成本(元)")
+            print("-" * 85)
             for t in range(self.T):
                 cost_t = self.prices[t] * self.optimal_powers[t] * self.delta_t
-                dynamic_t_max_val = self.dynamic_T_max_values[t] if hasattr(self, 'dynamic_T_max_values') and t < len(self.dynamic_T_max_values) else self.T_max_base
-                print(f"{t+1:6d} | {self.optimal_powers[t]:8.2f} | {self.optimal_temperatures[t+1]:11.2f} | {self.T_out[t+1]:11.2f} | {self.prices[t]:10.3f} | {cost_t:9.3f} | {dynamic_t_max_val:12.2f}")
+                print(f"{t+1:6d} | {self.optimal_powers[t]:8.2f} | {self.optimal_temperatures[t+1]:11.2f} | {self.T_out[t+1]:11.2f} | {self.prices[t]:10.3f} | {cost_t:9.3f}")
 
     def generate_price_power_curves_all_hours(self, num_samples=100, save_csv=True, csv_filename="ac_optimization_data.csv"):
         """
@@ -249,22 +222,11 @@ class ACOptimizer:
             return {}
         
         # 获取所有时刻的电价范围
-        all_prices_ref = self.prices # 参考原始电价序列的范围，而不是固定值
-        min_price = min(all_prices_ref)
-        max_price = max(all_prices_ref)
-
-        # 如果所有原始电价相同，则需要手动设置一个合理的范围进行采样
-        if min_price == max_price:
-            print(f"警告：原始电价序列中所有电价相同 ({min_price:.3f} 元/kWh)。")
-            print(f"将使用电价范围: {min_price - 0.5:.3f} 到 {max_price + 0.5:.3f} 元/kWh 进行采样。")
-            min_price -= 0.5
-            max_price += 0.5
-            if min_price < -1.0: # 限制一下最低价
-                 min_price = -1.0
-            if max_price > 2.0: # 限制一下最高价
-                 max_price = 2.0
+        all_prices = self.prices
+        min_price = min(all_prices)
+        max_price = max(all_prices)
         
-        print(f"采样电价范围: {min_price:.3f} - {max_price:.3f} 元/kWh")
+        print(f"所有时刻电价范围: {min_price:.3f} - {max_price:.3f} 元/kWh")
         print(f"每个时刻采样点数: {num_samples}")
         print(f"总共需要求解: {self.T * num_samples} 个优化问题")
         
@@ -283,21 +245,21 @@ class ACOptimizer:
             # 采样不同的价格值
             price_samples = np.linspace(min_price, max_price, num_samples)
             
-            sampled_prices_list = [] # 重命名以避免与外部prices冲突
+            sampled_prices = []
             sampled_powers = []
             
-            for i, price_sample_val in enumerate(price_samples): # 重命名迭代变量
+            for i, price in enumerate(price_samples):
                 # 恢复原始电价
                 self.prices = original_prices.copy()
                 
                 # 设置当前时刻的电价
-                self.prices[hour] = price_sample_val
+                self.prices[hour] = price
                 
                 # 求解优化问题
-                if self.solve(): # solve内部会根据当前的self.prices计算dynamic_T_max_values
+                if self.solve():
                     # 获取当前时刻的最优功率
                     P_t = self.optimal_powers[hour]
-                    sampled_prices_list.append(price_sample_val)
+                    sampled_prices.append(price)
                     sampled_powers.append(P_t)
                     
                     # 记录详细数据到CSV
@@ -305,24 +267,25 @@ class ACOptimizer:
                         # 记录该时刻的所有相关数据
                         csv_row = {
                             'Hour': hour + 1,  # 1-24小时
-                            'Sampled_Price': price_sample_val,
+                            'Sampled_Price': price,
                             'AC_Power': P_t,
-                            'Outdoor_Temperature': self.T_out[hour] if hour < len(self.T_out) else self.T_out[-1], # 使用对应小时的室外温度
+                            'Outdoor_Temperature': self.T_out[hour] if hour < len(self.T_out) else self.T_out[-1],
                             'Indoor_Temperature': self.optimal_temperatures[hour + 1] if hour + 1 < len(self.optimal_temperatures) else self.optimal_temperatures[-1],
-                            'Dynamic_T_max': self.dynamic_T_max_values[hour] # 记录当前采样价格下的动态T_max
+                            'Original_Price': original_prices[hour],
+                            'Total_Energy': self.total_energy,
+                            'Total_Cost': self.total_cost
                         }
                         csv_data.append(csv_row)
                 
                 # 显示进度
-                if (i + 1) % (num_samples // 5) == 0 or (i+1) == num_samples : # 更频繁的进度更新
+                if (i + 1) % 20 == 0:
                     print(f"  已完成 {i + 1}/{num_samples} 个采样点")
             
-            curves_data[hour] = (sampled_prices_list, sampled_powers)
-            print(f"  第 {hour+1} 小时生成了 {len(sampled_prices_list)} 个有效数据点")
+            curves_data[hour] = (sampled_prices, sampled_powers)
+            print(f"  第 {hour+1} 小时生成了 {len(sampled_prices)} 个有效数据点")
         
         # 恢复原始电价
         self.prices = original_prices
-        self.solve() # 重新求解一次以恢复原始状态的 dynamic_T_max_values，用于后续可能的绘图
         
         # 保存CSV文件
         if save_csv and csv_data:
@@ -363,29 +326,34 @@ class ACOptimizer:
         cols = min(4, num_plots)
         rows = (num_plots + cols - 1) // cols
         
-        fig, axes = plt.subplots(rows, cols, figsize=(5*cols, 4*rows), squeeze=False) # squeeze=False确保axes总是二维数组
-        axes = axes.flatten() # 扁平化以便索引
+        fig, axes = plt.subplots(rows, cols, figsize=(5*cols, 4*rows))
+        if num_plots == 1:
+            axes = [axes]
+        elif rows == 1:
+            axes = axes
+        else:
+            axes = axes.flatten()
         
         # 绘制每个时刻的曲线
         for idx, hour in enumerate(hours_to_plot):
-            if hour not in curves_data or not curves_data[hour][0]: # 检查数据是否存在且不为空
-                if idx < len(axes): # 确保索引在范围内
-                    axes[idx].set_title(f'第{hour+1}小时 (无数据)')
-                    axes[idx].set_visible(True) # 即使没数据也显示子图标题
+            if hour >= len(curves_data):
                 continue
                 
-            prices_list, powers_list = curves_data[hour] # 使用不同的变量名
+            prices, powers = curves_data[hour]
+            
+            if len(prices) == 0:
+                continue
             
             ax = axes[idx]
             
             # 按电价排序
-            sorted_data = sorted(zip(prices_list, powers_list))
+            sorted_data = sorted(zip(prices, powers))
             sorted_prices = [x[0] for x in sorted_data]
             sorted_powers = [x[1] for x in sorted_data]
             
             # 绘制曲线
             ax.plot(sorted_prices, sorted_powers, 'b-', linewidth=2, alpha=0.8)
-            ax.scatter(prices_list, powers_list, color='red', s=15, alpha=0.6, zorder=5)
+            ax.scatter(prices, powers, color='red', s=15, alpha=0.6, zorder=5)
             
             ax.set_xlabel('电价 (元/kWh)')
             ax.set_ylabel('功率 (kW)')
@@ -393,14 +361,13 @@ class ACOptimizer:
             ax.grid(True, alpha=0.3)
             
             # 设置坐标轴范围
-            if len(prices_list) > 0:
-                ax.set_xlim(min(prices_list) * 0.95 if min(prices_list) >= 0 else min(prices_list) * 1.05, 
-                            max(prices_list) * 1.05 if max(prices_list) >= 0 else max(prices_list) * 0.95)
-                ax.set_ylim(0, max(self.P_rated * 1.1, max(powers_list) * 1.1 if powers_list else 1))
+            if len(prices) > 0:
+                ax.set_xlim(min(prices) * 0.95, max(prices) * 1.05)
+                ax.set_ylim(0, max(powers) * 1.1 if powers else 1)
         
         # 隐藏多余的子图
-        for i in range(num_plots, len(axes)):
-            axes[i].set_visible(False)
+        for idx in range(num_plots, len(axes)):
+            axes[idx].set_visible(False)
         
         plt.tight_layout()
         plt.show()
@@ -408,13 +375,11 @@ class ACOptimizer:
         # 打印统计信息
         print(f"\n统计信息:")
         for hour in hours_to_plot:
-            if hour in curves_data and curves_data[hour][0]:
-                prices_list, powers_list = curves_data[hour]
-                print(f"第{hour+1}小时: 电价范围 {min(prices_list):.3f}-{max(prices_list):.3f}, "
-                      f"功率范围 {min(powers_list):.3f}-{max(powers_list):.3f} kW")
-            else:
-                print(f"第{hour+1}小时: 无有效数据")
-
+            if hour < len(curves_data):
+                prices, powers = curves_data[hour]
+                if len(prices) > 0:
+                    print(f"第{hour+1}小时: 电价范围 {min(prices):.3f}-{max(prices):.3f}, "
+                          f"功率范围 {min(powers):.3f}-{max(powers):.3f} kW")
 
     def plot_combined_price_power_curve(self, num_samples=100, save_csv=True, csv_filename="ac_optimization_data.csv"):
         """
@@ -433,35 +398,35 @@ class ACOptimizer:
             return
         
         # 合并所有时刻的数据点
-        all_prices_list = [] # 避免与外部prices冲突
-        all_powers_list = []
+        all_prices = []
+        all_powers = []
         
         for hour in range(self.T):
-            if hour in curves_data and curves_data[hour][0]: # 确保数据存在且不为空
-                prices_h, powers_h = curves_data[hour]
-                all_prices_list.extend(prices_h)
-                all_powers_list.extend(powers_h)
+            if hour in curves_data:
+                prices, powers = curves_data[hour]
+                all_prices.extend(prices)
+                all_powers.extend(powers)
         
-        if not all_prices_list: # 检查列表是否为空
-            print("没有有效的数据点可供绘制合并曲线")
+        if len(all_prices) == 0:
+            print("没有有效的数据点")
             return
         
         # 按电价分组，计算每个电价的平均功率
         price_groups = defaultdict(list)
         
         # 将相同电价的功率值分组
-        for price_val, power_val in zip(all_prices_list, all_powers_list):
+        for price, power in zip(all_prices, all_powers):
             # 将电价四舍五入到3位小数以便分组
-            rounded_price = round(price_val, 3)
-            price_groups[rounded_price].append(power_val)
+            rounded_price = round(price, 3)
+            price_groups[rounded_price].append(power)
         
         # 计算每个电价的平均功率
         grouped_prices = []
         grouped_powers = []
         
-        for price_val, power_list_val in price_groups.items():
-            grouped_prices.append(price_val)
-            grouped_powers.append(sum(power_list_val) / len(power_list_val))  # 平均功率
+        for price, power_list in price_groups.items():
+            grouped_prices.append(price)
+            grouped_powers.append(sum(power_list) / len(power_list))  # 平均功率
         
         # 按电价从高到低排序（用于阶梯图）
         sorted_data = sorted(zip(grouped_prices, grouped_powers), reverse=True)
@@ -472,40 +437,35 @@ class ACOptimizer:
         fig, ax = plt.subplots(1, 1, figsize=(12, 8))
         
         # 绘制所有原始数据点（较小的点，透明度较低）
-        ax.scatter(all_prices_list, all_powers_list, color='gray', s=10, alpha=0.2, label='原始数据点 (所有小时)')
+        ax.scatter(all_prices, all_powers, color='red', s=10, alpha=0.3, label='原始数据点')
         
         # 绘制分组后的平均值点
-        ax.scatter(grouped_prices, grouped_powers, color='blue', s=40, alpha=0.8, label='分组平均值 (按电价)')
+        ax.scatter(grouped_prices, grouped_powers, color='blue', s=40, alpha=0.8, label='分组平均值')
         
         # 使用step函数绘制阶梯状折线图
         ax.step(sorted_prices, sorted_powers, where='post', linewidth=2.5, 
-                color='darkblue', alpha=0.9, label='阶梯状需求曲线 (平均)')
+                color='blue', alpha=0.9, label='阶梯状需求曲线')
         
         ax.set_xlabel('电价 (元/kWh)', fontsize=12)
         ax.set_ylabel('功率 (kW)', fontsize=12)
-        ax.set_title('所有时刻合并的电价-功率关系（阶梯状折线图）', fontsize=14)
+        ax.set_title('所有时刻的电价-功率关系（阶梯状折线图）', fontsize=14)
         ax.grid(True, alpha=0.3)
         ax.legend()
         
         # 设置坐标轴范围
-        if all_prices_list: # 确保列表不为空
-            min_p = min(all_prices_list)
-            max_p = max(all_prices_list)
-            ax.set_xlim(min_p * 0.95 if min_p >= 0 else min_p * 1.05, 
-                        max_p * 1.05 if max_p >=0 else max_p * 0.95)
-            ax.set_ylim(0, max(self.P_rated * 1.1, max(all_powers_list) * 1.1 if all_powers_list else 1))
+        ax.set_xlim(min(all_prices) * 0.95, max(all_prices) * 1.05)
+        ax.set_ylim(0, max(all_powers) * 1.1)
         
         plt.tight_layout()
         plt.show()
         
         # 打印统计信息
-        if all_prices_list:
-            print(f"\n阶梯图统计信息:")
-            print(f"原始数据点数: {len(all_prices_list)}")
-            print(f"分组后电价档位数: {len(grouped_prices)}")
-            print(f"电价范围: {min(all_prices_list):.3f} - {max(all_prices_list):.3f} 元/kWh")
-            print(f"功率范围: {min(all_powers_list):.3f} - {max(all_powers_list):.3f} kW")
-            print(f"平均功率 (所有数据点): {np.mean(all_powers_list):.3f} kW")
+        print(f"\n阶梯图统计信息:")
+        print(f"原始数据点数: {len(all_prices)}")
+        print(f"分组后电价档位数: {len(grouped_prices)}")
+        print(f"电价范围: {min(all_prices):.3f} - {max(all_prices):.3f} 元/kWh")
+        print(f"功率范围: {min(all_powers):.3f} - {max(all_powers):.3f} kW")
+        print(f"平均功率: {np.mean(all_powers):.3f} kW")
 
 def main():
     """主函数示例"""
@@ -515,24 +475,23 @@ def main():
         delta_t=1.0,    # 1小时时间步
         P_rated=12.0,    # 额定功率
         T_min=21.0,     # 最低温度21°C
-        T_max=24.0,     # 基准最高温度24°C (现在是 T_max_base)
-        T_max_price_sensitivity_factor=0.05, # 新增：当电价为1时，T_max降低约5%；电价为-1时，T_max升高约5%
+        T_max=24.0,     # 最高温度24°C
         eta=0.98,       # 效率0.98
         R=3.0,          # 热阻3°C/kW
         C=1.8e7,        # 热容J∕°C
         T_initial=23.0  # 初始温度23°C
     )
     
-    # 设置室外温度（直接使用25个数据点，对应T=0到T=24）
+    # 设置室外温度（直接使用24小时数据）
     original_temp = [
         28.0, 28.0, 28.0, 28.0, 28.0, 28.5, 29.0, 29.5, 
         30.0, 30.5, 31.0, 31.5, 32.0, 31.5, 31.0, 30.5, 
-        29.0, 27.0, 26.0, 26.0, 27.0, 27.5, 28.0, 28.0, 28.0 
-    ] # 确保有 T+1 个数据点
+        29.0, 27.0, 26.0, 26.0, 27.0, 27.5, 28.0, 28.0, 28.0
+    ]
 
-    prices = [ # 24个电价数据
-    -1.0,  # X=0 (对应第1小时)
-    -0.75,  # X=1 (对应第2小时)
+    prices = [
+    -1.0,  # X=0
+    -0.75,  # X=1
     -0.50,  # X=2
     -0.25,  # X=3
     -0.25,  # X=4
@@ -554,10 +513,13 @@ def main():
     0.50,  # X=20
     0.50,  # X=21
     0.50,  # X=22
-    0.50,  # X=23 (对应第24小时)
+    0.50,  # X=23
     ]
     
+    # 直接使用24小时数据
     optimizer.set_outdoor_temperature(original_temp)
+    
+    # 设置电价
     optimizer.set_prices(prices)
     
     # 求解问题
@@ -572,10 +534,10 @@ def main():
     print("="*60)
     
     # 生成并绘制合并的电价-功率关系图
-    optimizer.plot_combined_price_power_curve(num_samples=50) # 减少样本数以加快测试
+    optimizer.plot_combined_price_power_curve(num_samples=100)
     
     # 可选：如果需要查看各个小时的单独图表，取消下面的注释
-    # optimizer.plot_price_power_curves_all_hours(num_samples=30, hours_to_plot=[0, 6, 12, 18]) # 减少样本数并选择部分小时
+    # optimizer.plot_price_power_curves_all_hours(num_samples=50, hours_to_plot=[0, 1, 2, 3, 4, 5])
 
 if __name__ == "__main__":
-    main()
+    main() 
