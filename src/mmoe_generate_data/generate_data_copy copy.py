@@ -10,6 +10,7 @@ and
 
 室温变化公式：T_{t+1}^{i} = T_{t+1}^{out} - \eta P_{t} R_{t} - (T_{t+1}^{out} - \eta P_{t} R_{t} - T_{t}^{i}) e^{- \Delta t / R C}
 
+新增约束：T_{1}^{i} = T_{target} (第一个时间步结束时达到目标温度)
 """
 
 import pulp
@@ -37,7 +38,7 @@ class ACOptimizerWithTempTarget:
         R: 热阻 (°C/kW)
         C: 热容 (J/°C)，将自动转换为kWh/°C
         T_initial: 初始室温 (°C)
-        T_target: 目标温度 (°C)
+        T_target: 第一个时间步结束时的目标温度 (°C)
         target_type: 目标温度类型 ('min', 'max', 'custom')
                     - 'min': 使用 T_min 作为目标
                     - 'max': 使用 T_max 作为目标  
@@ -96,71 +97,84 @@ class ACOptimizerWithTempTarget:
                 raise ValueError(f"室外温度序列长度 {len(T_out)} 必须至少为 {self.T + 1}")
             self.T_out = T_out[:self.T + 1]  # 确保长度正确
             
-    def solve_for_target_temp(self):
+    def solve(self):
         """
-        在每个控制周期尝试达到目标温度，计算所需功率
-        如果无法达到目标温度，则记录满功率运行的情况
-        每次计算都从初始温度开始，不基于上一步的温度
+        求解带温度目标约束的线性规划问题
         
         返回:
-        bool: 是否找到解
+        bool: 是否找到最优解
         """
-        # 创建结果存储列表
-        self.optimal_powers = []
-        self.optimal_temperatures = [self.T_initial]
-        self.target_achieved = []
-        self.total_energy = 0.0
+        # 创建线性规划问题
+        prob = pulp.LpProblem("AC_Power_Optimization_With_Temp_Target", pulp.LpMinimize)
         
+        # 决策变量
+        # P_t: 每个时间步的功率 (t = 1, 2, ..., T)
+        P = [pulp.LpVariable(f"P_{t}", lowBound=0, upBound=self.P_rated) 
+             for t in range(1, self.T + 1)]
+        
+        # T_i_t: 每个时间步结束时的室内温度 (t = 1, 2, ..., T)
+        # 注意：T_i[0] 对应 t=1 时刻结束时的温度
+        T_i = [pulp.LpVariable(f"T_i_{t}", lowBound=self.T_min, upBound=self.T_max) 
+               for t in range(1, self.T + 1)]
+        
+        # 目标函数：最小化总功耗（移除温度偏差惩罚，简化为纯功耗优化）
+        prob += pulp.lpSum([P[t-1] * self.delta_t for t in range(1, self.T + 1)]), "总功耗最小化"
+        
+        # 约束条件
+        
+        # 1. 功率约束（已在变量定义中包含）
+        # 0 ≤ P_t ≤ P_rated for all t
+        
+        # 2. 温度约束（已在变量定义中包含）
+        # T_min ≤ T_t ≤ T_max for all t
+        
+        # 3. 温度目标约束：移除强制约束，改为软约束（朝着目标方向努力）
+        # prob += T_i[0] == self.T_target, "第一时间步温度目标约束"
+        
+        # 4. 室温变化约束（一阶ETP公式）
         for t in range(1, self.T + 1):
-            # 每次计算都重置为初始温度
-            current_temp = self.T_initial
-            
-            # 计算当前室外温度
-            T_out = self.T_out[t]
-            
-            # 计算达到目标温度所需的功率
-            # 从一阶ETP公式: T_next = (1-exp_factor) * (T_out - eta*R*P) + exp_factor * T_current
-            # 求解 P: P = (T_out - (T_target - exp_factor*T_current)/(1-exp_factor)) / (eta*R)
-            
-            if abs(self.T_target - current_temp) < 0.01:
-                # 已经在目标温度，计算保持温度所需功率
-                if T_out > self.T_target:
-                    # 需要制冷
-                    required_power = (T_out - self.T_target) / (self.eta * self.R)
-                else:
-                    # 不需要空调
-                    required_power = 0.0
+            if t == 1:
+                # 第一个时间步，使用初始温度作为前一时刻温度
+                T_prev = self.T_initial
             else:
-                # 需要改变温度
-                try:
-                    # 计算理论上所需功率
-                    required_power = (T_out - (self.T_target - self.exp_factor * current_temp) / 
-                                    (1 - self.exp_factor)) / (self.eta * self.R)
-                except ZeroDivisionError:
-                    # 处理极端情况
-                    required_power = self.P_rated
+                # 使用前一时间步的室内温度
+                T_prev = T_i[t-2]  # T_i[t-2] 对应 T_i_{t-1}
             
-            # 限制功率在允许范围内
-            required_power = max(0.0, min(required_power, self.P_rated))
+            # 一阶ETP公式的线性化
+            # T_{t}^{i} = T_{t}^{out} - η P_{t-1} R - (T_{t}^{out} - η P_{t-1} R - T_{t-1}^{i}) * exp(-Δt/RC)
+            # 重新整理为：T_{t}^{i} = (1-exp_factor) * (T_{t}^{out} - η P_{t-1} R) + exp_factor * T_{t-1}^{i}
             
-            # 计算实际达到的温度
-            steady_state_temp = T_out - self.eta * self.R * required_power
-            next_temp = (1 - self.exp_factor) * steady_state_temp + self.exp_factor * current_temp
+            # 稳态温度：当功率为 P_{t-1} 时的稳态室内温度
+            steady_state_temp = self.T_out[t] - self.eta * self.R * P[t-1]
             
-            # 确保温度在允许范围内
-            next_temp = max(self.T_min, min(next_temp, self.T_max))
-            
-            # 检查是否达到目标温度
-            target_achieved = abs(next_temp - self.T_target) < 0.01
-            
-            # 保存结果
-            self.optimal_powers.append(required_power)
-            self.optimal_temperatures.append(next_temp)
-            self.target_achieved.append(target_achieved)
-            self.total_energy += required_power * self.delta_t
+            # 添加温度演化约束
+            prob += (T_i[t-1] == 
+                    (1 - self.exp_factor) * steady_state_temp + 
+                    self.exp_factor * T_prev), f"时间步{t}温度演化约束"
         
-        self.status = "最优解"
-        return True
+        # 求解
+        print("开始求解线性规划问题...")
+        prob.solve(pulp.PULP_CBC_CMD(msg=0))
+        
+        # 提取结果
+        if prob.status == pulp.LpStatusOptimal:
+            self.optimal_powers = [P[t-1].varValue for t in range(1, self.T + 1)]
+            self.optimal_temperatures = [self.T_initial] + [T_i[t-1].varValue for t in range(1, self.T + 1)]
+            self.total_energy = sum(self.optimal_powers) * self.delta_t
+            self.status = "最优解"
+            
+            # 验证温度目标是否达到
+            first_step_temp = self.optimal_temperatures[1]
+            temp_error = abs(first_step_temp - self.T_target)
+            print(f"第一时间步目标温度: {self.T_target:.2f}°C")
+            print(f"第一时间步实际温度: {first_step_temp:.2f}°C")
+            print(f"温度误差: {temp_error:.4f}°C")
+            
+        else:
+            self.status = f"求解失败: {pulp.LpStatus[prob.status]}"
+            print(f"线性规划求解状态: {self.status}")
+            
+        return prob.status == pulp.LpStatusOptimal
     
     def get_target_temperature_info(self):
         """
@@ -234,70 +248,17 @@ class ACOptimizerWithTempTarget:
         plt.tight_layout()
         plt.show()
         
-    def print_summary_table(self):
-        """
-        打印简洁的汇总表格，包含所有关键信息
-        反映每次计算都从初始温度开始的情况
-        """
-        if not hasattr(self, 'optimal_powers'):
-            print("请先求解问题")
-            return
-            
-        print("\n" + "=" * 100)
-        print("空调控制汇总表 (目标温度追求模式 - 每次从初始温度开始)")
-        print("=" * 100)
-        print("| 时间步 | 室外温度 | 室内温度 | 目标温度 | 温度差异 | 空调功率 | 功率比例 | 周期能耗 | 累计能耗 | 目标达成 | 备注   |")
-        print("|" + "-" * 98 + "|")
-        
-        # 初始行
-        print(f"| {'初始':>6} | {self.T_out[0]:8.2f} | {self.T_initial:8.2f} | {self.T_target:8.2f} | {'--':>8} | {'--':>8} | {'--':>8} | {'--':>8} | {'0.00':>8} | {'--':>8} | 初始状态 |")
-        
-        cumulative_energy = 0
-        for t in range(self.T):
-            power = self.optimal_powers[t]
-            # 每次计算都从初始温度开始
-            indoor_temp_prev = self.T_initial
-            indoor_temp_curr = self.optimal_temperatures[t+1]
-            outdoor_temp = self.T_out[t+1]
-            
-            temp_change = indoor_temp_curr - indoor_temp_prev
-            cycle_energy = power * self.delta_t
-            cumulative_energy += cycle_energy
-            power_ratio = power / self.P_rated * 100
-            temp_diff = indoor_temp_curr - self.T_target
-            
-            # 生成备注
-            remark = ""
-            if abs(indoor_temp_curr - self.T_min) < 0.01:
-                remark = "触及下限"
-            elif abs(indoor_temp_curr - self.T_max) < 0.01:
-                remark = "触及上限"
-            elif power == 0:
-                remark = "关闭"
-            elif abs(power - self.P_rated) < 0.01:
-                remark = "满功率"
-            else:
-                remark = "正常"
-                
-            target_status = "✓" if self.target_achieved[t] else "✗"
-                
-            print(f"| {t+1:6d} | {outdoor_temp:8.2f} | {indoor_temp_curr:8.2f} | {self.T_target:8.2f} | {temp_diff:+8.2f} | {power:8.2f} | {power_ratio:7.1f}% | {cycle_energy:8.3f} | {cumulative_energy:8.2f} | {target_status:^8} | {remark:6} |")
-        
-        print("|" + "-" * 98 + "|")
-        print("=" * 100)
-
     def print_control_cycle_details(self):
         """
         详细打印每个控制周期的状态信息
         输出室外温度、室内温度、空调功率等详细信息
-        反映每次计算都从初始温度开始的情况
         """
         if not hasattr(self, 'optimal_powers'):
             print("请先求解问题")
             return
             
         print("\n" + "=" * 80)
-        print("详细控制周期信息 (每次从初始温度开始)")
+        print("详细控制周期信息")
         print("=" * 80)
         
         # 打印系统参数
@@ -310,7 +271,6 @@ class ACOptimizerWithTempTarget:
         print(f"  时间常数 τ = R×C: {self.R * self.C:.2f} 小时")
         print(f"  温度范围: [{self.T_min}°C, {self.T_max}°C]")
         print(f"  目标温度: {self.T_target}°C (类型: {self.target_type})")
-        print(f"  计算模式: 每次计算都从初始温度 {self.T_initial}°C 开始")
         
         print(f"\n控制周期详细信息:")
         print("-" * 80)
@@ -319,8 +279,6 @@ class ACOptimizerWithTempTarget:
         print(f"初始状态 (t=0):")
         print(f"  室外温度: {self.T_out[0]:6.2f}°C")
         print(f"  室内温度: {self.T_initial:6.2f}°C")
-        print(f"  目标温度: {self.T_target:6.2f}°C")
-        print(f"  温度差异: {'--':>6}")
         print(f"  空调功率: {'--':>6} kW (未启动)")
         print(f"  能耗累计: {'0.00':>6} kWh")
         print("-" * 80)
@@ -329,8 +287,7 @@ class ACOptimizerWithTempTarget:
         cumulative_energy = 0
         for t in range(self.T):
             power = self.optimal_powers[t]
-            # 每次计算都从初始温度开始
-            indoor_temp_prev = self.T_initial
+            indoor_temp_prev = self.optimal_temperatures[t]
             indoor_temp_curr = self.optimal_temperatures[t+1]
             outdoor_temp = self.T_out[t+1]
             
@@ -340,7 +297,6 @@ class ACOptimizerWithTempTarget:
             
             # 计算温度变化
             temp_change = indoor_temp_curr - indoor_temp_prev
-            temp_diff = indoor_temp_curr - self.T_target
             
             # 计算稳态温度（如果维持当前功率）
             steady_state_temp = outdoor_temp - self.eta * self.R * power
@@ -348,15 +304,15 @@ class ACOptimizerWithTempTarget:
             print(f"控制周期 {t+1} (t={t+1}):")
             print(f"  室外温度: {outdoor_temp:6.2f}°C")
             print(f"  室内温度: {indoor_temp_prev:6.2f}°C → {indoor_temp_curr:6.2f}°C (变化: {temp_change:+.2f}°C)")
-            print(f"  目标温度: {self.T_target:6.2f}°C (差异: {temp_diff:+.2f}°C)")
             print(f"  空调功率: {power:6.2f} kW ({power/self.P_rated*100:5.1f}%额定功率)")
             print(f"  周期能耗: {cycle_energy:6.3f} kWh")
             print(f"  累计能耗: {cumulative_energy:6.2f} kWh")
             print(f"  稳态温度: {steady_state_temp:6.2f}°C (如果维持当前功率)")
-            print(f"  目标达成: {'是' if self.target_achieved[t] else '否'}")
             
             # 特殊标注
             remarks = []
+            if t == 0:
+                remarks.append(f"目标约束: 必须达到{self.T_target}°C")
             if abs(indoor_temp_curr - self.T_min) < 0.01:
                 remarks.append("触及温度下限")
             if abs(indoor_temp_curr - self.T_max) < 0.01:
@@ -377,7 +333,6 @@ class ACOptimizerWithTempTarget:
         print(f"  总能耗: {cumulative_energy:.2f} kWh")
         print(f"  平均功率: {cumulative_energy/(self.T * self.delta_t):.2f} kW")
         print(f"  功率利用率: {cumulative_energy/(self.T * self.delta_t)/self.P_rated*100:.1f}%")
-        print(f"  计算模式: 每次计算都从初始温度 {self.T_initial}°C 开始")
         
         # 温度分析
         min_temp = min(self.optimal_temperatures[1:])
@@ -386,12 +341,57 @@ class ACOptimizerWithTempTarget:
         
         print(f"  温度范围: [{min_temp:.2f}°C, {max_temp:.2f}°C]")
         print(f"  最终温度: {final_temp:.2f}°C")
-        print(f"  目标温度: {self.T_target:.2f}°C")
-        
-        # 目标达成情况
-        target_achieved_count = sum(self.target_achieved)
-        print(f"  目标温度达成率: {target_achieved_count}/{self.T} ({target_achieved_count/self.T*100:.1f}%)")
+        print(f"  第1步目标: {self.T_target:.2f}°C (实际: {self.optimal_temperatures[1]:.2f}°C)")
         print("=" * 80)
+
+    def print_summary_table(self):
+        """
+        打印简洁的汇总表格，包含所有关键信息
+        """
+        if not hasattr(self, 'optimal_powers'):
+            print("请先求解问题")
+            return
+            
+        print("\n" + "=" * 90)
+        print("空调控制汇总表 (带温度目标约束)")
+        print("=" * 90)
+        print("| 时间步 | 室外温度 | 室内温度 | 温度变化 | 空调功率 | 功率比例 | 周期能耗 | 累计能耗 | 备注   |")
+        print("|" + "-" * 88 + "|")
+        
+        # 初始行
+        print(f"| {'初始':>6} | {self.T_out[0]:8.2f} | {self.T_initial:8.2f} | {'--':>8} | {'--':>8} | {'--':>8} | {'--':>8} | {'0.00':>8} | 初始状态 |")
+        
+        cumulative_energy = 0
+        for t in range(self.T):
+            power = self.optimal_powers[t]
+            indoor_temp_prev = self.optimal_temperatures[t]
+            indoor_temp_curr = self.optimal_temperatures[t+1]
+            outdoor_temp = self.T_out[t+1]
+            
+            temp_change = indoor_temp_curr - indoor_temp_prev
+            cycle_energy = power * self.delta_t
+            cumulative_energy += cycle_energy
+            power_ratio = power / self.P_rated * 100
+            
+            # 生成备注
+            remark = ""
+            if t == 0:
+                remark = "目标约束"
+            elif abs(indoor_temp_curr - self.T_min) < 0.01:
+                remark = "触及下限"
+            elif abs(indoor_temp_curr - self.T_max) < 0.01:
+                remark = "触及上限"
+            elif power == 0:
+                remark = "关闭"
+            elif abs(power - self.P_rated) < 0.01:
+                remark = "满功率"
+            else:
+                remark = "正常"
+                
+            print(f"| {t+1:6d} | {outdoor_temp:8.2f} | {indoor_temp_curr:8.2f} | {temp_change:+8.2f} | {power:8.2f} | {power_ratio:7.1f}% | {cycle_energy:8.3f} | {cumulative_energy:8.2f} | {remark:6} |")
+        
+        print("|" + "-" * 88 + "|")
+        print("=" * 90)
 
     def print_results(self):
         """打印优化结果 - 增强版本"""
@@ -400,10 +400,9 @@ class ACOptimizerWithTempTarget:
             return
             
         print("=" * 60)
-        print("空调功率优化结果 (目标温度追求模式 - 每次从初始温度开始)")
+        print("空调功率优化结果 (带温度目标约束)")
         print("=" * 60)
         print(f"求解状态: {self.status}")
-        print(f"计算模式: 每次计算都从初始温度 {self.T_initial}°C 开始")
         
         if hasattr(self, 'total_energy'):
             print(f"总能耗: {self.total_energy:.2f} kWh")
@@ -416,181 +415,31 @@ class ACOptimizerWithTempTarget:
             print(f"  初始温度: {target_info['initial_temperature']:.2f}°C")
             print(f"  目标温度: {target_info['target_temperature']:.2f}°C")
             print(f"  需要变化: {target_info['temperature_change_needed']:+.2f}°C")
-            
-            # 目标达成情况
-            target_achieved_count = sum(self.target_achieved)
-            print(f"\n目标达成情况:")
-            print(f"  目标温度达成率: {target_achieved_count}/{self.T} ({target_achieved_count/self.T*100:.1f}%)")
+            print(f"  第1步实际达到: {self.optimal_temperatures[1]:.2f}°C")
             
             print(f"\n详细结果:")
-            print("时间步 | 功率(kW) | 室内温度(°C) | 室外温度(°C) | 目标达成 | 备注")
-            print("-" * 80)
+            print("时间步 | 功率(kW) | 室内温度(°C) | 室外温度(°C) | 备注")
+            print("-" * 70)
             
             # 特殊标注第一行（目标约束）
-            print(f"{'初始':>6} | {'--':>8} | {self.optimal_temperatures[0]:11.2f} | {self.T_out[0]:11.2f} | {'--':>8} | 初始状态")
+            print(f"{'初始':>6} | {'--':>8} | {self.optimal_temperatures[0]:11.2f} | {self.T_out[0]:11.2f} | 初始状态")
             
             for t in range(self.T):
                 remark = ""
-                if abs(self.optimal_temperatures[t+1] - self.T_min) < 0.01:
+                if t == 0:
+                    remark = "目标约束"
+                elif abs(self.optimal_temperatures[t+1] - self.T_min) < 0.01:
                     remark = "触及下限"
                 elif abs(self.optimal_temperatures[t+1] - self.T_max) < 0.01:
                     remark = "触及上限"
-                elif abs(self.optimal_powers[t] - self.P_rated) < 0.01:
-                    remark = "满功率"
-                elif self.optimal_powers[t] < 0.01:
-                    remark = "空调关闭"
-                else:
-                    remark = "正常运行"
                     
-                target_status = "✓" if self.target_achieved[t] else "✗"
-                    
-                print(f"{t+1:6d} | {self.optimal_powers[t]:8.2f} | {self.optimal_temperatures[t+1]:11.2f} | {self.T_out[t+1]:11.2f} | {target_status:^8} | {remark}")
+                print(f"{t+1:6d} | {self.optimal_powers[t]:8.2f} | {self.optimal_temperatures[t+1]:11.2f} | {self.T_out[t+1]:11.2f} | {remark}")
             
             print("=" * 60)
             
             # 调用新的详细输出方法
             self.print_summary_table()
             self.print_control_cycle_details()
-
-def save_formatted_csv(powers, temps, outdoor_temps, target_temp, delta_t, P_rated, target_achieved, initial_temp, optimizer_name="", filename="power_data_formatted.csv"):
-    """
-    保存格式化的CSV文件，包含所有需要的数据
-    反映每次计算都从初始温度开始的情况
-    
-    参数:
-    powers: 功率列表
-    temps: 温度列表
-    outdoor_temps: 室外温度列表
-    target_temp: 目标温度
-    delta_t: 时间步长
-    P_rated: 额定功率
-    target_achieved: 目标达成情况列表
-    initial_temp: 初始温度
-    optimizer_name: 优化器名称（用于标识不同的测试）
-    filename: 输出文件名
-    """
-    with open(filename, "w", encoding="utf-8") as f:
-        # 写入表头和元数据
-        f.write("# 空调功率优化数据 (每次计算都从初始温度开始)\n")
-        f.write(f"# 测试名称: {optimizer_name}\n")
-        f.write(f"# 时间步长: {delta_t} 小时\n")
-        f.write(f"# 额定功率: {P_rated} kW\n")
-        f.write(f"# 初始温度: {initial_temp}°C\n")
-        f.write(f"# 目标温度: {target_temp}°C\n")
-        f.write(f"# 总能耗: {sum(powers) * delta_t:.2f} kWh\n")
-        f.write(f"# 平均功率: {sum(powers)/len(powers):.2f} kW\n")
-        f.write(f"# 目标达成率: {sum(target_achieved)}/{len(target_achieved)} ({sum(target_achieved)/len(target_achieved)*100:.1f}%)\n")
-        f.write("#\n")
-        
-        # 写入CSV表头
-        f.write("时间步,时间(h),室外温度(°C),室内温度(°C),目标温度(°C),温度差异(°C),所需功率(kW),功率占比(%),温度变化(°C),目标达成,周期能耗(kWh),累计能耗(kWh)\n")
-        
-        # 写入数据行
-        cumulative_energy = 0
-        for i in range(len(powers)):
-            hour = i * delta_t
-            # 每次计算都从初始温度开始
-            temp_prev = initial_temp
-            temp_change = temps[i] - temp_prev
-            temp_diff = temps[i] - target_temp
-            cycle_energy = powers[i] * delta_t
-            cumulative_energy += cycle_energy
-            target_status = "是" if target_achieved[i] else "否"
-            
-            f.write(f"{i+1},{hour:.1f},{outdoor_temps[i+1]:.1f},{temps[i]:.2f},{target_temp:.1f},{temp_diff:+.2f},{powers[i]:.2f},{powers[i]/P_rated*100:.1f},{temp_change:+.2f},{target_status},{cycle_energy:.3f},{cumulative_energy:.2f}\n")
-    
-    print(f"✅ 详细数据已保存到 {filename} (每次计算都从初始温度 {initial_temp}°C 开始)")
-    return filename
-
-def save_to_pandas_csv(optimizer, outdoor_temps, filename="result_data.csv"):
-    """
-    将优化器结果转换为Pandas DataFrame并保存为CSV
-    
-    参数:
-    optimizer: ACOptimizerWithTempTarget实例
-    outdoor_temps: 室外温度列表
-    filename: 输出文件名
-    
-    返回:
-    str: 保存的文件名
-    """
-    try:
-        import pandas as pd
-        
-        # 检查优化器是否已经求解
-        if not hasattr(optimizer, 'optimal_powers'):
-            print("请先求解问题")
-            return None
-            
-        # 准备数据
-        data = []
-        powers = optimizer.optimal_powers
-        temps = optimizer.optimal_temperatures[1:]  # 跳过初始温度
-        
-        cumulative_energy = 0
-        for i in range(len(powers)):
-            hour = i * optimizer.delta_t
-            # 每次计算都从初始温度开始
-            temp_prev = optimizer.T_initial
-            temp_change = temps[i] - temp_prev
-            temp_diff = temps[i] - optimizer.T_target
-            cycle_energy = powers[i] * optimizer.delta_t
-            cumulative_energy += cycle_energy
-            target_achieved = optimizer.target_achieved[i]
-            power_ratio = powers[i] / optimizer.P_rated * 100
-            
-            data.append({
-                '时间步': i+1,
-                '时间(h)': hour,
-                '室外温度(°C)': outdoor_temps[i+1],
-                '室内温度(°C)': temps[i],
-                '目标温度(°C)': optimizer.T_target,
-                '温度差异(°C)': temp_diff,
-                '所需功率(kW)': powers[i],
-                '功率占比(%)': power_ratio,
-                '温度变化(°C)': temp_change,
-                '目标达成': target_achieved,
-                '周期能耗(kWh)': cycle_energy,
-                '累计能耗(kWh)': cumulative_energy
-            })
-            
-        # 创建DataFrame
-        df = pd.DataFrame(data)
-        
-        # 添加元数据（作为注释）
-        with open(filename, 'w', encoding='utf-8') as f:
-            f.write(f"# 空调功率优化数据 (每次计算都从初始温度开始)\n")
-            f.write(f"# 时间步长: {optimizer.delta_t} 小时\n")
-            f.write(f"# 额定功率: {optimizer.P_rated} kW\n")
-            f.write(f"# 初始温度: {optimizer.T_initial}°C\n")
-            f.write(f"# 目标温度: {optimizer.T_target}°C\n")
-            f.write(f"# 总能耗: {optimizer.total_energy:.2f} kWh\n")
-            f.write(f"# 平均功率: {optimizer.total_energy/optimizer.T:.2f} kW\n")
-            f.write(f"# 时间常数 τ = {optimizer.R * optimizer.C:.2f} 小时\n")
-            f.write(f"# 指数衰减因子: exp(-Δt/τ) = {optimizer.exp_factor:.6f}\n")
-            f.write(f"# 目标达成率: {sum(optimizer.target_achieved)}/{optimizer.T} ({sum(optimizer.target_achieved)/optimizer.T*100:.1f}%)\n")
-            f.write("#\n")
-        
-        # 追加DataFrame到文件
-        df.to_csv(filename, mode='a', index=False, encoding='utf-8')
-        
-        print(f"✅ Pandas DataFrame已保存到 {filename}")
-        return filename
-        
-    except ImportError:
-        print("⚠️ 无法导入pandas，将使用基本CSV格式保存")
-        # 如果pandas不可用，回退到基本CSV格式
-        return save_formatted_csv(
-            powers=optimizer.optimal_powers,
-            temps=optimizer.optimal_temperatures[1:],
-            outdoor_temps=outdoor_temps,
-            target_temp=optimizer.T_target,
-            delta_t=optimizer.delta_t,
-            P_rated=optimizer.P_rated,
-            target_achieved=optimizer.target_achieved,
-            initial_temp=optimizer.T_initial,
-            filename=filename
-        )
 
 def main():
     # 新增场景：按照readme.md要求的24小时功率需求计算
@@ -629,35 +478,9 @@ def main():
     print(f"  目标温度: {simple_optimizer.T_target}°C (无变化)")
     print(f"  室外温度: {simple_outdoor_temp}")
     
-    if simple_optimizer.solve_for_target_temp():
+    if simple_optimizer.solve():
         print("✅ 简单测试成功！")
         simple_optimizer.print_results()
-        
-        # 保存简单测试结果到CSV文件
-        simple_csv = save_formatted_csv(
-            powers=simple_optimizer.optimal_powers,
-            temps=simple_optimizer.optimal_temperatures[1:],
-            outdoor_temps=simple_outdoor_temp,
-            target_temp=simple_optimizer.T_target,
-            delta_t=simple_optimizer.delta_t,
-            P_rated=simple_optimizer.P_rated,
-            target_achieved=simple_optimizer.target_achieved,
-            initial_temp=simple_optimizer.T_initial,
-            optimizer_name="简单测试",
-            filename="simple_test_data.csv"
-        )
-        print(f"简单测试数据已保存到: {simple_csv}")
-        
-        # 使用pandas保存更丰富的数据格式
-        try:
-            pandas_csv = save_to_pandas_csv(
-                optimizer=simple_optimizer,
-                outdoor_temps=simple_outdoor_temp,
-                filename="simple_test_pandas.csv"
-            )
-            print(f"简单测试pandas数据已保存到: {pandas_csv}")
-        except Exception as e:
-            print(f"保存pandas格式时出错: {e}")
     else:
         print("❌ 简单测试失败！")
         print(f"原因: {simple_optimizer.status}")
@@ -712,7 +535,7 @@ def main():
         R=2.0,           # 热阻2.0°C/kW (真实建筑参数)
         C=1.5e7,         # 热容1.5e7 J/°C (真实建筑参数)
         T_initial=23.5,  # 初始温度23.5°C (readme: 23.5±0.5度)
-        T_target=25,   # 目标设为初始温度（不强制改变）
+        T_target=23.5,   # 目标设为初始温度（不强制改变）
         target_type='custom'
     )
     
@@ -745,13 +568,12 @@ def main():
     # 计算24小时基础功率需求
     print(f"\n开始计算24小时基础功率需求...")
     
-    if optimizer_readme.solve_for_target_temp():
+    if optimizer_readme.solve():
         print("✅ 24小时基础优化成功！")
         
         # 输出功率需求汇总
         powers = optimizer_readme.optimal_powers
         temps = optimizer_readme.optimal_temperatures[1:]  # 跳过初始温度
-        target_achieved = optimizer_readme.target_achieved
         
         print(f"功率统计:")
         print(f"  最大功率: {max(powers):.2f} kW")
@@ -759,73 +581,34 @@ def main():
         print(f"  总能耗: {sum(powers) * optimizer_readme.delta_t:.2f} kWh")
         print(f"  温度范围: {min(temps):.2f}°C - {max(temps):.2f}°C")
         
-        # 目标达成情况
-        target_achieved_count = sum(target_achieved)
-        print(f"  目标温度达成率: {target_achieved_count}/{optimizer_readme.T} ({target_achieved_count/optimizer_readme.T*100:.1f}%)")
-        
         # 输出详细的24小时功率需求数据（前8个和后8个控制周期）
-        print(f"\n前8个控制周期详情 (每次计算都从初始温度 {optimizer_readme.T_initial}°C 开始):")
-        print("时间 | 室外温度 | 室内温度 | 目标温度 | 温度差异 | 所需功率 | 功率占比 | 温度变化 | 目标达成")
-        print("-" * 105)
+        print(f"\n前8个控制周期详情:")
+        print("时间 | 室外温度 | 室内温度 | 目标温度 | 所需功率 | 功率占比 | 温度变化")
+        print("-" * 85)
         for i in range(min(8, len(powers))):
             hour = i * 0.5
-            # 每次计算都从初始温度开始
-            temp_change = temps[i] - optimizer_readme.T_initial
-            temp_diff = temps[i] - optimizer_readme.T_target
-            target_status = "✓" if target_achieved[i] else "✗"
-            print(f"{hour:4.1f}h | {outdoor_temp_half_hour[i+1]:8.1f} | {temps[i]:8.2f} | {optimizer_readme.T_target:8.1f} | {temp_diff:+8.2f} | {powers[i]:8.2f} | {powers[i]/optimizer_readme.P_rated*100:6.1f}% | {temp_change:+6.2f} | {target_status:^8}")
+            temp_change = temps[i] - (optimizer_readme.T_initial if i == 0 else temps[i-1])
+            print(f"{hour:4.1f}h | {outdoor_temp_half_hour[i+1]:8.1f} | {temps[i]:8.2f} | {optimizer_readme.T_target:8.1f} | {powers[i]:8.2f} | {powers[i]/optimizer_readme.P_rated*100:6.1f}% | {temp_change:+6.2f}")
         
         if len(powers) > 8:
             print("  ... (中间周期省略)")
-            print("最后8个控制周期详情 (每次计算都从初始温度开始):")
+            print("最后8个控制周期详情:")
             for i in range(max(0, len(powers)-8), len(powers)):
                 hour = i * 0.5
-                # 每次计算都从初始温度开始
-                temp_change = temps[i] - optimizer_readme.T_initial
-                temp_diff = temps[i] - optimizer_readme.T_target
-                target_status = "✓" if target_achieved[i] else "✗"
-                print(f"{hour:4.1f}h | {outdoor_temp_half_hour[i+1]:8.1f} | {temps[i]:8.2f} | {optimizer_readme.T_target:8.1f} | {temp_diff:+8.2f} | {powers[i]:8.2f} | {powers[i]/optimizer_readme.P_rated*100:6.1f}% | {temp_change:+6.2f} | {target_status:^8}")
+                temp_change = temps[i] - temps[i-1] if i > 0 else temps[i] - optimizer_readme.T_initial
+                print(f"{hour:4.1f}h | {outdoor_temp_half_hour[i+1]:8.1f} | {temps[i]:8.2f} | {optimizer_readme.T_target:8.1f} | {powers[i]:8.2f} | {powers[i]/optimizer_readme.P_rated*100:6.1f}% | {temp_change:+6.2f}")
         
         # 保存完整数据用于进一步分析
         print(f"\n💾 保存完整24小时功率需求数据...")
         with open("24h_power_data.txt", "w", encoding="utf-8") as f:
-            f.write("24小时空调功率需求数据 (每次计算都从初始温度开始)\n")
+            f.write("24小时空调功率需求数据\n")
             f.write("=" * 80 + "\n")
-            f.write("时间(h),室外温度(°C),室内温度(°C),目标温度(°C),温度差异(°C),所需功率(kW),功率占比(%),温度变化(°C),目标达成,计算模式\n")
+            f.write("时间(h),室外温度(°C),室内温度(°C),目标温度(°C),所需功率(kW),功率占比(%),温度变化(°C)\n")
             for i in range(len(powers)):
                 hour = i * 0.5
-                # 每次计算都从初始温度开始
-                temp_change = temps[i] - optimizer_readme.T_initial
-                temp_diff = temps[i] - optimizer_readme.T_target
-                target_status = "是" if target_achieved[i] else "否"
-                f.write(f"{hour:.1f},{outdoor_temp_half_hour[i+1]:.1f},{temps[i]:.2f},{optimizer_readme.T_target:.1f},{temp_diff:+.2f},{powers[i]:.2f},{powers[i]/optimizer_readme.P_rated*100:.1f},{temp_change:+.2f},{target_status},从初始温度开始\n")
-        print(f"✅ 数据已保存到 24h_power_data.txt (每次计算都从初始温度 {optimizer_readme.T_initial}°C 开始)")
-        
-        # 保存格式化的CSV文件
-        readme_csv = save_formatted_csv(
-            powers=optimizer_readme.optimal_powers,
-            temps=optimizer_readme.optimal_temperatures[1:],
-            outdoor_temps=outdoor_temp_half_hour,
-            target_temp=optimizer_readme.T_target,
-            delta_t=optimizer_readme.delta_t,
-            P_rated=optimizer_readme.P_rated,
-            target_achieved=optimizer_readme.target_achieved,
-            initial_temp=optimizer_readme.T_initial,
-            optimizer_name="24小时空调优化",
-            filename="24h_power_data.csv"
-        )
-        print(f"24小时详细数据已保存到: {readme_csv}")
-        
-        # 使用pandas保存更丰富的24小时数据格式
-        try:
-            pandas_csv = save_to_pandas_csv(
-                optimizer=optimizer_readme,
-                outdoor_temps=outdoor_temp_half_hour,
-                filename="24h_power_data_pandas.csv"
-            )
-            print(f"24小时pandas数据已保存到: {pandas_csv}")
-        except Exception as e:
-            print(f"保存pandas格式时出错: {e}")
+                temp_change = temps[i] - (optimizer_readme.T_initial if i == 0 else temps[i-1])
+                f.write(f"{hour:.1f},{outdoor_temp_half_hour[i+1]:.1f},{temps[i]:.2f},{optimizer_readme.T_target:.1f},{powers[i]:.2f},{powers[i]/optimizer_readme.P_rated*100:.1f},{temp_change:+.2f}\n")
+        print(f"✅ 数据已保存到 24h_power_data.txt")
         
     else:
         print("❌ 24小时基础优化失败！")

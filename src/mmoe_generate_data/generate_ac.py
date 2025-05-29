@@ -11,10 +11,26 @@ T_{t+1}^{i} = T_{t+1}^{out} - \eta P_{t} R_{t} - (T_{t+1}^{out} - \eta P_{t} R_{
 """
 
 import numpy as np
-import pandas as pd
 import json
 import os
 import random
+import warnings
+
+# 忽略与 np.bool 相关的警告
+warnings.filterwarnings('ignore', category=FutureWarning)
+
+# 添加NumPy兼容性修复
+if not hasattr(np, 'bool'):
+    np.bool = bool
+if not hasattr(np, 'object'):
+    np.object = object
+if not hasattr(np, 'float'):
+    np.float = float
+if not hasattr(np, 'int'):
+    np.int = int
+
+# 导入pandas
+import pandas as pd
 
 def generate_ac_data(num_acs=100, small_buildings=60, medium_buildings=30, large_buildings=10):
     """
@@ -37,18 +53,18 @@ def generate_ac_data(num_acs=100, small_buildings=60, medium_buildings=30, large
     building_params = {
         "small": {
             "R_range": (1.8, 2.5),      # 等效热阻范围 (℃/KW)
-            "C_range": (1.5e7, 2.5e7),  # 等效热容范围 (J/℃)
+            "C_range": (1.1e7, 1.5e7),  # 等效热容范围 (J/℃)
             "P_rated_range": (2.5, 3.5)  # 空调额定功率范围 (KW)
         },
         "medium": {
             "R_range": (1.2, 1.8),      # 等效热阻范围 (℃/KW)
-            "C_range": (2.5e7, 4.0e7),  # 等效热容范围 (J/℃)
+            "C_range": (2.1e7, 3.7e7),  # 等效热容范围 (J/℃)
             "P_rated_range": (3.5, 5.0)  # 空调额定功率范围 (KW)
         },
         "large": {
-            "R_range": (0.8, 1.2),      # 等效热阻范围 (℃/KW)
+            "R_range": (2.8, 4.8),      # 等效热阻范围 (℃/KW)
             "C_range": (4.0e7, 6.0e7),  # 等效热容范围 (J/℃)
-            "P_rated_range": (5.0, 8.0)  # 空调额定功率范围 (KW)
+            "P_rated_range": (12.0, 20.0)  # 空调额定功率范围 (KW)
         }
     }
     
