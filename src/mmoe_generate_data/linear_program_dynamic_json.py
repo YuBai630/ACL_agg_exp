@@ -21,6 +21,7 @@ import pandas as pd
 import json
 import random
 import os
+from datetime import datetime
 
 # 设置中文字体
 rcParams['font.sans-serif'] = ['SimHei']
@@ -357,12 +358,93 @@ def create_optimizer_from_config(ac_config, T=24, delta_t=1.0, T_max_price_sensi
     
     return optimizer
 
+def load_summer_temperature_data(csv_file="data/W2.csv", random_day=True):
+    """
+    从W2.csv文件中加载夏季温度数据（7月1日到9月30日）
+    
+    参数:
+    csv_file: CSV文件路径
+    random_day: 是否随机选择一天的数据，否则使用第一天
+    
+    返回:
+    hourly_temps_celsius: 24小时的温度数据（摄氏度），对应T=0到T=24
+    selected_date: 所选择的日期字符串
+    """
+    try:
+        # 读取CSV文件
+        df = pd.read_csv(csv_file)
+        
+        # 将Time列转换为datetime类型
+        df['Time'] = pd.to_datetime(df['Time'])
+        
+        # 筛选夏季数据（7月1日到9月30日）
+        summer_data = df[
+            (df['Time'].dt.month >= 7) & 
+            (df['Time'].dt.month <= 9) &
+            (df['Time'].dt.day <= 30)  # 确保不会超出9月30日
+        ].copy()
+        
+        if summer_data.empty:
+            print("警告: 未找到夏季数据，使用默认温度")
+            return None, None
+        
+        # 将华氏度转换为摄氏度: C = (F - 32) * 5/9
+        summer_data['Temperature(C)'] = (summer_data['Temperature(F)'] - 32) * 5 / 9
+        
+        # 获取所有可用的日期
+        available_dates = summer_data['Time'].dt.date.unique()
+        
+        if random_day:
+            selected_date = random.choice(available_dates)
+        else:
+            selected_date = available_dates[0]
+        
+        print(f"选择的日期: {selected_date}")
+        
+        # 筛选选中日期的数据
+        day_data = summer_data[summer_data['Time'].dt.date == selected_date].copy()
+        
+        # 确保按时间排序
+        day_data = day_data.sort_values('Time')
+        
+        # 由于数据是每15分钟记录一次，我们需要提取每小时的数据
+        # 选择每小时的第一个记录（:00分）或最接近的记录
+        day_data['Hour'] = day_data['Time'].dt.hour
+        
+        # 获取每小时的平均温度
+        hourly_data = day_data.groupby('Hour')['Temperature(C)'].mean().reset_index()
+        
+        # 确保有24小时的数据
+        hourly_temps = []
+        for hour in range(24):
+            if hour in hourly_data['Hour'].values:
+                temp = hourly_data[hourly_data['Hour'] == hour]['Temperature(C)'].iloc[0]
+            else:
+                # 如果某小时没有数据，使用插值或相邻小时的平均值
+                if hourly_temps:
+                    temp = hourly_temps[-1]  # 使用前一小时的温度
+                else:
+                    temp = 25.0  # 默认温度
+            hourly_temps.append(temp)
+        
+        # 添加T=24时刻的温度（通常与T=0相同或类似）
+        hourly_temps.append(hourly_temps[0])
+        
+        print(f"成功加载温度数据: {len(hourly_temps)} 个数据点")
+        print(f"温度范围: {min(hourly_temps):.1f}°C 到 {max(hourly_temps):.1f}°C")
+        
+        return hourly_temps, str(selected_date)
+        
+    except Exception as e:
+        print(f"加载温度数据时出错: {e}")
+        return None, None
+
 def main():
     """主函数示例"""
     print("=" * 60)
     print("空调功率优化程序 (支持JSON配置)")
     print("=" * 60)
-    
+
     # 加载空调配置数据
     ac_configs = load_ac_data("ac_data.json")
     
@@ -397,13 +479,27 @@ def main():
             T_initial=23.0  # 初始温度23°C
         )
     
-    # 设置室外温度（直接使用25个数据点，对应T=0到T=24）
-    original_temp = [
-        28.0, 28.0, 28.0, 28.0, 28.0, 28.5, 29.0, 29.5, 
-        30.0, 30.5, 31.0, 31.5, 32.0, 31.5, 31.0, 30.5, 
-        29.0, 27.0, 26.0, 26.0, 27.0, 27.5, 28.0, 28.0, 28.0 
-    ]
-
+    # 设置室外温度 - 从W2.csv加载夏季数据
+    print("\n" + "=" * 40)
+    print("加载室外温度数据...")
+    print("=" * 40)
+    
+    # 尝试从W2.csv加载夏季温度数据
+    summer_temps, selected_date = load_summer_temperature_data("data/W2.csv", random_day=True)
+    
+    if summer_temps is not None:
+        print(f"使用{selected_date}的夏季温度数据")
+        optimizer.set_outdoor_temperature(summer_temps)
+    else:
+        # 如果加载失败，使用备用温度数据
+        print("使用备用温度数据")
+        original_temp = [
+            28.0, 28.0, 28.0, 28.0, 28.0, 28.5, 29.0, 29.5, 
+            30.0, 30.5, 31.0, 31.5, 32.0, 31.5, 31.0, 30.5, 
+            29.0, 27.0, 26.0, 26.0, 27.0, 27.5, 28.0, 28.0, 28.0 
+        ]
+        optimizer.set_outdoor_temperature(original_temp)
+    
     prices = [ # 24个电价数据
     -1.0,  # X=0 (对应第1小时)
     -0.75,  # X=1 (对应第2小时)
@@ -431,7 +527,6 @@ def main():
     0.50,  # X=23 (对应第24小时)
     ]
     
-    optimizer.set_outdoor_temperature(original_temp)
     optimizer.set_prices(prices)
     
     # 求解问题
