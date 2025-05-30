@@ -377,9 +377,9 @@ def load_summer_temperature_data(csv_file="data/W2.csv", random_day=True):
         # 将Time列转换为datetime类型
         df['Time'] = pd.to_datetime(df['Time'])
         
-        # 筛选夏季数据（7月1日到9月30日）
+        # 筛选夏季数据（8月1日到9月30日）
         summer_data = df[
-            (df['Time'].dt.month >= 7) & 
+            (df['Time'].dt.month >= 8) & 
             (df['Time'].dt.month <= 9) &
             (df['Time'].dt.day <= 30)  # 确保不会超出9月30日
         ].copy()

@@ -51,21 +51,21 @@ def load_ac_data(json_file="D:/experiments/ACL_agg_exp/src/mmoe_generate_data/ac
         if isinstance(data, list):
             # 如果JSON文件直接是一个列表
             ac_configs = data
-            # print(f"检测到JSON文件为列表结构")
+            print(f"检测到JSON文件为列表结构")
         elif isinstance(data, dict):
             # 如果JSON文件是字典结构
             if 'air_conditioners' in data:
                 ac_configs = data['air_conditioners']
-                # print(f"检测到JSON文件为字典结构，使用'air_conditioners'键")
+                print(f"检测到JSON文件为字典结构，使用'air_conditioners'键")
             elif 'acs' in data:
                 ac_configs = data['acs']
-                # print(f"检测到JSON文件为字典结构，使用'acs'键")
+                print(f"检测到JSON文件为字典结构，使用'acs'键")
             else:
                 # 尝试找到第一个列表值
                 for key, value in data.items():
                     if isinstance(value, list):
                         ac_configs = value
-                        # print(f"检测到JSON文件为字典结构，使用'{key}'键")
+                        print(f"检测到JSON文件为字典结构，使用'{key}'键")
                         break
                 
                 if not ac_configs:
@@ -95,9 +95,9 @@ def load_ac_data(json_file="D:/experiments/ACL_agg_exp/src/mmoe_generate_data/ac
                 else:
                     print(f"警告：第{i+1}个配置不是字典格式，跳过")
             
-            # print("空调类型统计:")
-            # for ac_type, count in type_counts.items():
-            #     print(f"  {ac_type}: {count}个")
+            print("空调类型统计:")
+            for ac_type, count in type_counts.items():
+                print(f"  {ac_type}: {count}个")
             
             return valid_configs
         else:
@@ -212,12 +212,12 @@ def create_optimizer_from_config(ac_config, T=24, delta_t=1.0, T_max_price_sensi
             if P_rated_original < 8.0:
                 P_rated = min_required_cooling / (efficiency * R_original)
                 modification_reason = f"Insufficient rated power: increased from {P_rated_original:.2f}kW to {P_rated:.2f}kW to ensure cooling capacity"
-                # print(f"    🔧 自动调整额定功率: {P_rated_original:.2f}kW → {P_rated:.2f}kW (确保制冷能力)")
+                print(f"    🔧 自动调整额定功率: {P_rated_original:.2f}kW → {P_rated:.2f}kW (确保制冷能力)")
             else:
                 # 方案2：增大热阻R（提高制冷效率）
                 R = min_required_cooling / (efficiency * P_rated_original)
                 modification_reason = f"Insufficient thermal resistance: increased from {R_original:.3f}°C/kW to {R:.3f}°C/kW to ensure cooling capacity"
-                # print(f"    🔧 自动调整热阻: {R_original:.3f}°C/kW → {R:.3f}°C/kW (确保制冷能力)")
+                print(f"    🔧 自动调整热阻: {R_original:.3f}°C/kW → {R:.3f}°C/kW (确保制冷能力)")
         
         # 计算最终制冷能力
         final_cooling_capacity = efficiency * P_rated * R
@@ -273,16 +273,15 @@ def create_optimizer_from_config(ac_config, T=24, delta_t=1.0, T_max_price_sensi
             T_initial=T_initial
         )
         
-        # 简化输出
-        # print(f"成功创建空调优化器:")
-        # print(f"  ID: {ac_config.get('id', 'N/A')}")
-        # print(f"  类型: {ac_config.get('type', 'N/A')}")
-        # print(f"  额定功率: {P_rated:.2f} kW")
-        # print(f"  温度范围: [{T_min:.1f}°C, {T_max:.1f}°C]")
-        # print(f"  效率: {efficiency:.3f}")
-        # print(f"  热阻: {R:.3f} °C/kW")
-        # print(f"  热容: {C:.1e} J/°C")
-        # print(f"  制冷能力: {final_cooling_capacity:.2f} °C")
+        print(f"成功创建空调优化器:")
+        print(f"  ID: {ac_config.get('id', 'N/A')}")
+        print(f"  类型: {ac_config.get('type', 'N/A')}")
+        print(f"  额定功率: {P_rated:.2f} kW")
+        print(f"  温度范围: [{T_min:.1f}°C, {T_max:.1f}°C]")
+        print(f"  效率: {efficiency:.3f}")
+        print(f"  热阻: {R:.3f} °C/kW")
+        print(f"  热容: {C:.1e} J/°C")
+        print(f"  制冷能力: {final_cooling_capacity:.2f} °C")
         
         return optimizer, ac_params_record
         
@@ -294,7 +293,7 @@ def create_optimizer_from_config(ac_config, T=24, delta_t=1.0, T_max_price_sensi
 class ACOptimizer:
     def __init__(self, T=24, delta_t=1.0, P_rated=3.0, T_min=20.0, T_max=26.0,
                  T_max_price_sensitivity_factor=0.05,  # 新增：电价对T_max的敏感度因子
-                 eta=0.8, R=2.0, C=5.0, T_initial=22.0, verbose=False):
+                 eta=0.8, R=2.0, C=5.0, T_initial=22.0):
         """
         初始化空调优化器
         
@@ -309,7 +308,6 @@ class ACOptimizer:
         R: 热阻 (°C/kW)
         C: 热容 (J/°C)，将自动转换为kWh/°C
         T_initial: 初始室温 (°C)
-        verbose: 是否打印详细信息
         """
         self.T = T
         self.delta_t = delta_t
@@ -332,10 +330,9 @@ class ACOptimizer:
         # 所以 R*C 的单位是 (°C/kW) * (kWh/°C) = h
         self.exp_factor = np.exp(-delta_t / (R * self.C))
         
-        if verbose:
-            print(f"热容转换: {C:.1e} J/°C = {self.C:.1e} kWh/°C")
-            print(f"时间常数 τ = R*C = {R:.1f} * {self.C:.1e} = {R * self.C:.2f} 小时")
-            print(f"指数衰减因子: exp(-Δt/τ) = {self.exp_factor:.6f}")
+        print(f"热容转换: {C:.1e} J/°C = {self.C:.1e} kWh/°C")
+        print(f"时间常数 τ = R*C = {R:.1f} * {self.C:.1e} = {R * self.C:.2f} 小时")
+        print(f"指数衰减因子: exp(-Δt/τ) = {self.exp_factor:.6f}")
         
     def set_outdoor_temperature(self, T_out):
         """设置室外温度序列"""
@@ -502,7 +499,7 @@ class ACOptimizer:
                 dynamic_t_max_val = self.dynamic_T_max_values[t] if hasattr(self, 'dynamic_T_max_values') and t < len(self.dynamic_T_max_values) else self.T_max_base
                 print(f"{t+1:6d} | {self.optimal_powers[t]:8.2f} | {self.optimal_temperatures[t+1]:11.2f} | {self.T_out[t+1]:11.2f} | {self.prices[t]:10.3f} | {cost_t:9.3f} | {dynamic_t_max_val:12.2f}")
 
-    def generate_price_power_curves_all_hours(self, num_samples=100, save_csv=True, csv_filename="ac_optimization_data.csv", current_date=None, write_header=True, ac_id=None, rolling_hour=None, base_price=None, real_price=None, verbose=True):
+    def generate_price_power_curves_all_hours(self, num_samples=100, save_csv=True, csv_filename="ac_optimization_data.csv", current_date=None, write_header=True, ac_id=None, rolling_hour=None, base_price=None, real_price=None):
         """
         为所有时刻或指定滚动时刻生成电价-功率关系曲线
 
@@ -516,7 +513,6 @@ class ACOptimizer:
         rolling_hour: 如果不为None，则只处理指定的滚动时刻
         base_price: 基准电价，如果为None则使用0.0
         real_price: 真实电价，用于计算下一时刻的真实室内温度
-        verbose: 是否输出详细信息
 
         返回:
         curves_data: 字典，键为时刻索引，值为(c_t, P_t)数据对列表
@@ -527,30 +523,22 @@ class ACOptimizer:
         
         # 使用基准电价(如果提供)
         base_price_value = 0.0 if base_price is None else base_price
-        if verbose:
-            print(f"      基准电价: {base_price_value:.2f} 元/kWh")
+        print(f"      基准电价: {base_price_value:.2f} 元/kWh")
         
         # 记录真实电价(如果提供)
         real_price_value = base_price_value if real_price is None else real_price
-        if verbose:
-            print(f"      真实电价: {real_price_value:.2f} 元/kWh")
+        print(f"      真实电价: {real_price_value:.2f} 元/kWh")
         
-        if verbose:
-            if rolling_hour is not None:
-                print(f"滚动优化模式: 只处理第 {rolling_hour+1} 小时")
-                hours_to_process = [rolling_hour]  # 只处理指定的滚动时刻
-            else:
-                print(f"全时段优化模式: 处理所有24小时")
-                hours_to_process = list(range(self.T))  # 处理所有时刻
-            
-            print(f"采样电价范围: {min_price:.3f} - {max_price:.3f} 元/kWh")
-            print(f"每个时刻采样点数: {num_samples}")
-            print(f"总共需要求解: {len(hours_to_process) * num_samples} 个优化问题")
+        if rolling_hour is not None:
+            print(f"滚动优化模式: 只处理第 {rolling_hour+1} 小时")
+            hours_to_process = [rolling_hour]  # 只处理指定的滚动时刻
         else:
-            if rolling_hour is not None:
-                hours_to_process = [rolling_hour]
-            else:
-                hours_to_process = list(range(self.T))
+            print(f"全时段优化模式: 处理所有24小时")
+            hours_to_process = list(range(self.T))  # 处理所有时刻
+        
+        print(f"采样电价范围: {min_price:.3f} - {max_price:.3f} 元/kWh")
+        print(f"每个时刻采样点数: {num_samples}")
+        print(f"总共需要求解: {len(hours_to_process) * num_samples} 个优化问题")
         
         curves_data = {}
         
@@ -562,11 +550,10 @@ class ACOptimizer:
         
         # 为每个需要处理的时刻生成价格-功率曲线
         for hour in hours_to_process:
-            if verbose:
-                if rolling_hour is not None:
-                    print(f"\n正在处理滚动时刻 {hour+1} 小时...")
-                else:
-                    print(f"\n正在处理第 {hour+1} 小时...")
+            if rolling_hour is not None:
+                print(f"\n正在处理滚动时刻 {hour+1} 小时...")
+            else:
+                print(f"\n正在处理第 {hour+1} 小时...")
             
             # 采样不同的价格值 - 均匀采样
             price_samples = np.linspace(min_price, max_price, num_samples)
@@ -611,12 +598,11 @@ class ACOptimizer:
                         daily_csv_data.append(csv_row)
                 
                 # 显示进度
-                if verbose and ((i + 1) % (num_samples // 5) == 0 or (i+1) == num_samples):
+                if (i + 1) % (num_samples // 5) == 0 or (i+1) == num_samples:
                     print(f"  已完成 {i + 1}/{num_samples} 个采样点")
             
             curves_data[hour] = (sampled_prices_list, sampled_powers)
-            if verbose:
-                print(f"  第 {hour+1} 小时生成了 {len(sampled_prices_list)} 个有效数据点")
+            print(f"  第 {hour+1} 小时生成了 {len(sampled_prices_list)} 个有效数据点")
             
             # 根据真实电价计算真实的空调功率和下一时刻的室内温度
             # 但不记录到CSV中
@@ -630,13 +616,11 @@ class ACOptimizer:
                 if real_price_value <= min(prices_array):
                     # 如果真实电价低于最低采样电价，使用最低电价对应的功率
                     real_power = powers_array[np.argmin(prices_array)]
-                    if verbose:
-                        print(f"  真实电价 {real_price_value:.3f} 低于采样范围，使用最低电价的功率: {real_power:.3f} kW")
+                    print(f"  真实电价 {real_price_value:.3f} 低于采样范围，使用最低电价的功率: {real_power:.3f} kW")
                 elif real_price_value >= max(prices_array):
                     # 如果真实电价高于最高采样电价，使用最高电价对应的功率
                     real_power = powers_array[np.argmax(prices_array)]
-                    if verbose:
-                        print(f"  真实电价 {real_price_value:.3f} 高于采样范围，使用最高电价的功率: {real_power:.3f} kW")
+                    print(f"  真实电价 {real_price_value:.3f} 高于采样范围，使用最高电价的功率: {real_power:.3f} kW")
                 else:
                     # 线性插值获取真实功率
                     # 找到最接近的两个电价点
@@ -652,8 +636,7 @@ class ACOptimizer:
                     
                     # 线性插值
                     real_power = power_low + (real_price_value - price_low) * (power_high - power_low) / (price_high - price_low)
-                    if verbose:
-                        print(f"  插值计算真实电价 {real_price_value:.3f} 对应的功率: {real_power:.3f} kW")
+                    print(f"  插值计算真实电价 {real_price_value:.3f} 对应的功率: {real_power:.3f} kW")
                 
                 # 计算真实功率下的下一时刻室内温度
                 # 使用ETP模型: T_{t+1}^{i} = (1-exp_factor) * (T_{t+1}^{out} - η P_t R) + exp_factor * T_t^{i}
@@ -673,8 +656,7 @@ class ACOptimizer:
                 # 存储真实的下一时刻室内温度，供下一个小时使用
                 self.real_next_temperature = T_next
                 
-                if verbose:
-                    print(f"  真实功率 {real_power:.3f} kW 下，室内温度从 {T_current:.2f}°C 变化到 {T_next:.2f}°C")
+                print(f"  真实功率 {real_power:.3f} kW 下，室内温度从 {T_current:.2f}°C 变化到 {T_next:.2f}°C")
                 
                 # 移除：不再将真实电价对应的功率记录添加到CSV
         
@@ -696,26 +678,24 @@ class ACOptimizer:
             
             try:
                 df.to_csv(csv_filename, mode=mode, header=header, index=False)
-                if verbose:
-                    if rolling_hour is not None:
-                        print(f"\n✅ 滚动时刻数据已保存到 {csv_filename} (模式: {'覆盖' if mode == 'w' else '追加'})")
-                    else:
-                        print(f"\n✅ 当天数据已保存到 {csv_filename} (模式: {'覆盖' if mode == 'w' else '追加'})")
-                    print(f"   本次保存 {len(daily_csv_data)} 行数据")
-                    if write_header:
-                        print(f"   英文表头: {list(df.columns)}")
+                if rolling_hour is not None:
+                    print(f"\n✅ 滚动时刻数据已保存到 {csv_filename} (模式: {'覆盖' if mode == 'w' else '追加'})")
+                else:
+                    print(f"\n✅ 当天数据已保存到 {csv_filename} (模式: {'覆盖' if mode == 'w' else '追加'})")
+                print(f"   本次保存 {len(daily_csv_data)} 行数据")
+                if write_header:
+                    print(f"   英文表头: {list(df.columns)}")
                 
                 # 显示当前CSV文件的统计信息
-                if verbose:
-                    try:
-                        current_df = pd.read_csv(csv_filename)
-                        print(f"   CSV文件当前总行数: {len(current_df)}")
-                        if 'AC_ID' in current_df.columns:
-                            print(f"   包含空调数: {current_df['AC_ID'].nunique()}")
-                        if 'Date' in current_df.columns:
-                            print(f"   包含日期数: {current_df['Date'].nunique()}")
-                    except Exception as e:
-                        print(f"   无法读取CSV文件统计信息: {e}")
+                try:
+                    current_df = pd.read_csv(csv_filename)
+                    print(f"   CSV文件当前总行数: {len(current_df)}")
+                    if 'AC_ID' in current_df.columns:
+                        print(f"   包含空调数: {current_df['AC_ID'].nunique()}")
+                    if 'Date' in current_df.columns:
+                        print(f"   包含日期数: {current_df['Date'].nunique()}")
+                except Exception as e:
+                    print(f"   无法读取CSV文件统计信息: {e}")
                 
             except Exception as e:
                 print(f"❌ 保存CSV文件时出错: {e}")
@@ -1143,11 +1123,10 @@ def extract_rolling_temperature(month_data, unique_dates, start_date, start_hour
                     rolling_temps[i] = ac_t_max + random_increase
                     adjusted_count += 1
             
-            # 温度调整信息不需要输出
-            # if adjusted_count > 0:
-            #     print(f"    🌡️  滚动温度调整: {adjusted_count}个时刻从低于{ac_t_max:.1f}°C调整为{ac_t_max:.1f}°C+0.5~1.0°C")
-            #     print(f"    📊 调整前温度范围: {original_min:.1f}°C - {max(rolling_temps):.1f}°C")
-            #     print(f"    📊 调整后温度范围: {min(rolling_temps):.1f}°C - {max(rolling_temps):.1f}°C")
+            if adjusted_count > 0:
+                print(f"    🌡️  滚动温度调整: {adjusted_count}个时刻从低于{ac_t_max:.1f}°C调整为{ac_t_max:.1f}°C+0.5~1.0°C")
+                print(f"    📊 调整前温度范围: {original_min:.1f}°C - {max(rolling_temps):.1f}°C")
+                print(f"    📊 调整后温度范围: {min(rolling_temps):.1f}°C - {max(rolling_temps):.1f}°C")
         
         return rolling_temps
         
@@ -1283,9 +1262,9 @@ def main():
     ]
     
     # 1. 加载空调配置数据
-    # print("\n" + "=" * 40)
-    # print("加载空调配置数据...")
-    # print("=" * 40)
+    print("\n" + "=" * 40)
+    print("加载空调配置数据...")
+    print("=" * 40)
     
     ac_configs = load_ac_data("D:/experiments/ACL_agg_exp/src/mmoe_generate_data/ac_data.json")
     
@@ -1307,9 +1286,9 @@ def main():
     print(f"将处理 {len(ac_configs)} 个空调配置")
     
     # 2. 加载2021年9月温度数据和10月1日数据
-    # print("\n" + "=" * 40)
-    # print("加载2021年9月温度数据...")
-    # print("=" * 40)
+    print("\n" + "=" * 40)
+    print("加载2021年9月温度数据...")
+    print("=" * 40)
     
     month_data, unique_dates = load_summer_temperature_data("data/W2.csv")
     
@@ -1323,23 +1302,23 @@ def main():
     total_days = len(unique_dates) - 1  # 减1是因为10月1日仅用于边界处理
     total_acs = len(ac_configs)
     
-    # print(f"\n全局参数设置:")
-    # print(f"  空调数量: {total_acs}")
-    # print(f"  处理天数: {total_days} (不包括10月1日)")
-    # print(f"  每个时刻采样点数: {num_samples}")
-    # print(f"  滚动优化: 每个时刻使用未来24小时的温度预测")
-    # print(f"  输出文件: {csv_filename}")
-    # print(f"  电价采样范围: -1.0 到 +1.0 元/kWh")
+    print(f"\n全局参数设置:")
+    print(f"  空调数量: {total_acs}")
+    print(f"  处理天数: {total_days} (不包括10月1日)")
+    print(f"  每个时刻采样点数: {num_samples}")
+    print(f"  滚动优化: 每个时刻使用未来24小时的温度预测")
+    print(f"  输出文件: {csv_filename}")
+    print(f"  电价采样范围: -1.0 到 +1.0 元/kWh")
     
     # 打印默认电价数组信息
-    # print(f"\n默认电价数组 (用作电价采样的基准):")
-    # print(f"  凌晨和深夜 (0-3时, 21-23时): 负电价，鼓励使用空调")
-    # print(f"  早晨和晚上 (4-8时, 18-20时): 从负到正过渡")
-    # print(f"  中午和下午 (11-14时): 高正电价，抑制使用空调")
-    # print(f"  小时  | 电价(元/kWh)")
-    # print(f"  ------+------------")
-    # for h, price in enumerate(default_prices):
-    #     print(f"  {h:2d}:00 | {price:+.2f}")
+    print(f"\n默认电价数组 (用作电价采样的基准):")
+    print(f"  凌晨和深夜 (0-3时, 21-23时): 负电价，鼓励使用空调")
+    print(f"  早晨和晚上 (4-8时, 18-20时): 从负到正过渡")
+    print(f"  中午和下午 (11-14时): 高正电价，抑制使用空调")
+    print(f"  小时  | 电价(元/kWh)")
+    print(f"  ------+------------")
+    for h, price in enumerate(default_prices):
+        print(f"  {h:2d}:00 | {price:+.2f}")
     
     # 检查CSV文件是否已存在
     csv_exists = os.path.exists(csv_filename)
@@ -1418,17 +1397,15 @@ def main():
         all_ac_params_records.append(ac_params_record)
         
         # 5. 循环处理9月每天的数据
-        # print(f"\n开始处理空调 {ac_config.get('id', 'N/A')} 的9月数据...")
-        # print(f"📝 注意：滚动优化方式，每天每小时计算一次，使用未来24小时温度窗口")
+        print(f"\n开始处理空调 {ac_config.get('id', 'N/A')} 的9月数据...")
+        print(f"📝 注意：滚动优化方式，每天每小时计算一次，使用未来24小时温度窗口")
         
         for day_idx, current_date in enumerate(september_dates):
-            # print(f"\n  处理第 {day_idx + 1}/{len(september_dates)} 天: {current_date}")
+            print(f"\n  处理第 {day_idx + 1}/{len(september_dates)} 天: {current_date}")
             
             # 循环每个小时进行滚动优化
             for hour in range(24):
-                # 简化输出，只显示空调和天的进度
-                progress = f"空调 {ac_idx+1}/{total_acs} | 日期 {day_idx+1}/{len(september_dates)} | 小时 {hour+1}/24"
-                print(f"\r{progress}", end="", flush=True)
+                print(f"    处理 {current_date} 的第 {hour+1} 小时")
                 
                 # 提取滚动预测的温度数据
                 rolling_temps = extract_rolling_temperature(
@@ -1440,14 +1417,14 @@ def main():
                 )
                 
                 if rolling_temps is None:
-                    print(f"\n      跳过 {current_date} 的第 {hour+1} 小时（无法获取滚动温度数据）")
+                    print(f"      跳过 {current_date} 的第 {hour+1} 小时（无法获取滚动温度数据）")
                     continue
                 
                 # 设置滚动窗口的室外温度
                 optimizer.set_outdoor_temperature(rolling_temps)
                 
                 # 记录温度区间
-                # print(f"      滚动温度范围: {min(rolling_temps):.1f}°C - {max(rolling_temps):.1f}°C")
+                print(f"      滚动温度范围: {min(rolling_temps):.1f}°C - {max(rolling_temps):.1f}°C")
                 
                 # 使用默认电价数组进行电价采样
                 # 注意：电价采样仍然是在[-1,1]范围内，但默认电价数组用作真实电价
@@ -1464,11 +1441,11 @@ def main():
                 
                 # 更新优化器的初始温度
                 optimizer.T_initial = current_T_initial
-                # print(f"      当前时刻初始室内温度: {current_T_initial:.2f}°C")
+                print(f"      当前时刻初始室内温度: {current_T_initial:.2f}°C")
                 
                 # 使用当前小时的默认电价作为"真实电价"
                 real_price = default_prices[hour]
-                # print(f"      当前时刻真实电价: {real_price:.2f} 元/kWh")
+                print(f"      当前时刻真实电价: {real_price:.2f} 元/kWh")
                 
                 # 生成当前小时的电价-功率关系曲线数据
                 write_header = is_first_write and day_idx == 0 and hour == 0  # 只在第一次写入头部
@@ -1484,27 +1461,30 @@ def main():
                         ac_id=ac_config.get('id', f'AC_{ac_idx+1}'),
                         rolling_hour=hour,  # 当前处理的小时
                         base_price=real_price,  # 使用默认电价数组中对应小时的电价作为基准和真实电价
-                        real_price=real_price,  # 传递真实电价
-                        verbose=False  # 不要详细输出
+                        real_price=real_price  # 新增：传递真实电价
                     )
                     
-                    if curves_data is None:
-                        print(f"\n      ❌ 生成滚动预测数据失败")
+                    if curves_data:
+                        print(f"      ✅ 成功生成滚动预测数据")
+                        is_first_write = False  # 第一次写入完成后，后续都是追加
+                    else:
+                        print(f"      ❌ 生成滚动预测数据失败")
                         
                 except Exception as e:
-                    print(f"\n      ❌ 处理日期 {current_date} 第 {hour+1} 小时时出错: {e}")
+                    print(f"      ❌ 处理日期 {current_date} 第 {hour+1} 小时时出错: {e}")
                     continue
             
-            # 显示天进度 (换行)
-            print("")
+            # 显示天进度
+            progress = (day_idx + 1) / len(september_dates) * 100
+            print(f"    📊 空调进度: {day_idx + 1}/{len(september_dates)} 天已完成 ({progress:.1f}%)")
                 
             # 显示当前CSV文件大小
-            # try:
-            #     if os.path.exists(csv_filename):
-            #         file_size = os.path.getsize(csv_filename) / (1024 * 1024)  # MB
-            #         print(f"    📁 CSV文件大小: {file_size:.2f} MB")
-            # except:
-            #     pass
+            try:
+                if os.path.exists(csv_filename):
+                    file_size = os.path.getsize(csv_filename) / (1024 * 1024)  # MB
+                    print(f"    📁 CSV文件大小: {file_size:.2f} MB")
+            except:
+                pass
         
         # 显示空调处理完成的总进度
         ac_progress = (ac_idx + 1) / total_acs * 100
@@ -1542,14 +1522,13 @@ def main():
             date_range = sorted(final_df['Date'].unique())
             print(f"日期范围: {date_range[0]} 到 {date_range[-1]}")
         
-        # 不输出列名
-        # print(f"CSV文件列名: {list(final_df.columns)}")
+        print(f"CSV文件列名: {list(final_df.columns)}")
         
-        # 不输出预览数据
-        # print(f"\n前5行数据:")
-        # print(final_df.head().to_string(index=False))
-        # print(f"\n后5行数据:")
-        # print(final_df.tail().to_string(index=False))
+        # 显示前几行和后几行
+        print(f"\n前5行数据:")
+        print(final_df.head().to_string(index=False))
+        print(f"\n后5行数据:")
+        print(final_df.tail().to_string(index=False))
         
     except Exception as e:
         print(f"读取最终CSV文件时出错: {e}")

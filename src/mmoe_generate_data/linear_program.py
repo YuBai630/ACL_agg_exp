@@ -532,6 +532,68 @@ class ACOptimizer:
             # 按电价从高到低排序后输出数量
             for price_val, power_list_val in sorted(price_groups.items(), reverse=True):
                 print(f"  电价 {price_val:.3f} 元/kWh: {len(power_list_val)} 个数据点")
+    
+    def save_individual_price_power_curves(self, num_samples=100, save_dir=".", save_csv=True, csv_filename="ac_optimization_data.csv"):
+        """
+        为每个小时单独生成电价-功率折线图并保存到文件
+        
+        参数:
+        num_samples: 每个时刻的采样点数量
+        save_dir: 保存图形的目录
+        save_csv: 是否保存数据到CSV文件
+        csv_filename: CSV文件名
+        """
+        # 生成所有时刻的数据
+        curves_data = self.generate_price_power_curves_all_hours(num_samples, save_csv, csv_filename)
+        
+        if not curves_data:
+            print("无法生成有效的采样数据")
+            return
+        
+        print(f"\n开始为每个小时生成并保存电价-功率折线图...")
+        
+        # 为每个小时生成单独的图形
+        for hour in range(self.T):
+            if hour not in curves_data or not curves_data[hour][0]:
+                print(f"  第 {hour+1} 小时: 无有效数据，跳过")
+                continue
+                
+            prices_list, powers_list = curves_data[hour]
+            
+            # 按电价排序
+            sorted_data = sorted(zip(prices_list, powers_list))
+            sorted_prices = [x[0] for x in sorted_data]
+            sorted_powers = [x[1] for x in sorted_data]
+            
+            # 创建新图形
+            plt.figure(figsize=(10, 6))
+            
+            # 绘制散点图
+            plt.scatter(prices_list, powers_list, color='blue', s=30, alpha=0.6)
+            
+            # 绘制折线图
+            plt.plot(sorted_prices, sorted_powers, 'r-', linewidth=2)
+            
+            plt.xlabel('电价 (元/kWh)', fontsize=12)
+            plt.ylabel('功率 (kW)', fontsize=12)
+            plt.title(f'第{hour+1}小时 电价-功率关系', fontsize=14)
+            plt.grid(True, alpha=0.3)
+            
+            # 设置坐标轴范围
+            min_p = min(prices_list)
+            max_p = max(prices_list)
+            plt.xlim(min_p * 0.95 if min_p >= 0 else min_p * 1.05, 
+                     max_p * 1.05 if max_p >=0 else max_p * 0.95)
+            plt.ylim(0, max(self.P_rated * 1.1, max(powers_list) * 1.1))
+            
+            # 保存图形
+            filename = f"{save_dir}/hour_{hour+1}_price_power_curve.png"
+            plt.savefig(filename, dpi=300, bbox_inches='tight')
+            plt.close()  # 关闭图形以释放内存
+            
+            print(f"  已保存第 {hour+1} 小时的图形到: {filename}")
+        
+        print(f"\n所有图形已保存到 {save_dir} 目录")
 
 def main():
     """主函数示例"""
@@ -597,11 +659,11 @@ def main():
     print("开始生成电价-功率关系曲线...")
     print("="*60)
     
-    # 生成并绘制合并的电价-功率关系图
-    optimizer.plot_combined_price_power_curve(num_samples=100) # 减少样本数以加快测试
+    # 为每个小时生成并保存电价-功率折线图
+    optimizer.save_individual_price_power_curves(num_samples=50)
     
-    # 可选：如果需要查看各个小时的单独图表，取消下面的注释
-    # optimizer.plot_price_power_curves_all_hours(num_samples=30, hours_to_plot=[0, 6, 12, 18]) # 减少样本数并选择部分小时
+    # 可选：如果需要查看合并的电价-功率关系图，取消下面的注释
+    # optimizer.plot_combined_price_power_curve(num_samples=100)
 
 if __name__ == "__main__":
     main()
